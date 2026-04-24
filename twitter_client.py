@@ -39,6 +39,15 @@ class TwitterClient:
             print(f"Error getting user name: {e}")
             return "someone"
 
+    def post_tweet(self, text):
+        try:
+            self.client.create_tweet(text=text)
+            print(f"Posted tweet: {text}")
+            return True
+        except Exception as e:
+            print(f"Error posting tweet: {e}")
+            return False
+
     def reply(self, tweet_id, text):
         try:
             self.client.create_tweet(text=text, in_reply_to_tweet_id=tweet_id)

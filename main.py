@@ -2,12 +2,22 @@ import os
 import asyncio
 import json
 import random
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from twitter_client import TwitterClient
 from ai_orchestrator import generate_engagement, generate_startup_tweet
 from datetime import datetime
+from dotenv import load_dotenv
 
-# ... (previous code)
+load_dotenv()
+
+app = FastAPI()
+twitter = TwitterClient()
+
+# Configuration
+# Focusing on Science, Philosophy, Tech, and Malawi as requested
+KEYWORDS = ["science", "philosophy", "tech", "Malawi", "quantum physics", "biotechnology", "Malawi tech", "philosophy of mind"]
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_MINUTES", 5)) * 60
+PROCESSED_TWEETS_FILE = "processed_tweets.json"
 
 # Live Logging System
 logs = []
@@ -17,29 +27,38 @@ def log_action(message):
     full_message = f"[{timestamp}] {message}"
     print(full_message)
     logs.append(full_message)
-    # Keep only the last 100 logs
     if len(logs) > 100:
         logs.pop(0)
+
+def load_processed_tweets():
+    if os.path.exists(PROCESSED_TWEETS_FILE):
+        try:
+            with open(PROCESSED_TWEETS_FILE, "r") as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+def save_processed_tweets(processed_ids):
+    try:
+        with open(PROCESSED_TWEETS_FILE, "w") as f:
+            json.dump(list(processed_ids), f)
+    except Exception as e:
+        log_action(f"Error saving processed tweets: {e}")
+
+processed_ids = load_processed_tweets()
 
 async def bot_loop():
     global processed_ids
     log_action("Engagement loop initialized.")
     
-    # Startup Action: Find and Retweet a relevant post immediately
+    # Startup Action: Post a startup tweet
     try:
-        startup_keyword = random.choice(KEYWORDS)
-        log_action(f"Startup: Looking for a tweet to retweet about {startup_keyword}...")
-        startup_tweets = twitter.search_tweets(startup_keyword, max_results=1)
-        if startup_tweets:
-            target = startup_tweets[0]
-            if twitter.retweet(target.id):
-                log_action(f"Startup retweet successful: {target.text[:50]}...")
-                processed_ids.add(target.id)
-                save_processed_tweets(processed_ids)
-        else:
-            log_action("Startup: No tweets found to retweet.")
+        startup_text = generate_startup_tweet()
+        if twitter.post_tweet(startup_text):
+            log_action(f"Startup tweet posted: {startup_text}")
     except Exception as e:
-        log_action(f"Failed startup retweet: {e}")
+        log_action(f"Failed startup action: {e}")
 
     while True:
         keyword = random.choice(KEYWORDS)
@@ -57,25 +76,32 @@ async def bot_loop():
             author_name = twitter.get_user_name(tweet.author_id)
             log_action(f"Processing tweet from @{author_name}: {tweet.text[:50]}...")
             
-            action_roll = random.random()
+            # The user requested: "quote, repost and comment, do it"
+            # We will do all three actions for the tweet.
             
-            if action_roll < 0.6:
-                response = generate_engagement(tweet.text, author_name, "reply")
-                if twitter.reply(tweet.id, response):
-                    log_action(f"Replied: {response}")
-            elif action_roll < 0.9:
-                response = generate_engagement(tweet.text, author_name, "quote")
-                if twitter.quote(tweet.id, response):
-                    log_action(f"Quoted: {response}")
-            else:
-                if twitter.retweet(tweet.id):
-                    log_action("Retweeted successfully.")
+            # 1. Quote
+            quote_text = generate_engagement(tweet.text, author_name, "quote")
+            if twitter.quote(tweet.id, quote_text):
+                log_action(f"Quoted: {quote_text}")
+            
+            await asyncio.sleep(5) # Small gap
+            
+            # 2. Repost (Retweet)
+            if twitter.retweet(tweet.id):
+                log_action("Retweeted successfully.")
+            
+            await asyncio.sleep(5) # Small gap
+            
+            # 3. Comment (Reply)
+            reply_text = generate_engagement(tweet.text, author_name, "reply")
+            if twitter.reply(tweet.id, reply_text):
+                log_action(f"Replied: {reply_text}")
                 
             processed_ids.add(tweet.id)
             save_processed_tweets(processed_ids)
             
-            wait_time = random.randint(30, 90)
-            log_action(f"Sleeping for {wait_time}s between actions...")
+            wait_time = random.randint(60, 120)
+            log_action(f"Sleeping for {wait_time}s between tweet batches...")
             await asyncio.sleep(wait_time)
             
         log_action(f"Loop finished. Sleeping for {POLL_INTERVAL//60} minutes...")
@@ -87,12 +113,10 @@ async def startup_event():
 
 @app.get("/")
 def read_root():
-    # Show the latest 50 logs on the homepage
-    log_html = "<br>".join(reversed(logs))
     return {
         "bot_status": "Active",
         "processed_total": len(processed_ids),
-        "recent_activity": logs[-20:] # Return as JSON for easy reading
+        "recent_activity": logs[-20:]
     }
 
 @app.get("/logs")
@@ -105,6 +129,5 @@ def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
