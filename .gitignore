@@ -1,0 +1,4 @@
+.env
+processed_tweets.json
+__pycache__/
+*.pyc
