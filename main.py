@@ -4,80 +4,104 @@ import json
 import random
 from fastapi import FastAPI, BackgroundTasks
 from twitter_client import TwitterClient
-from ai_orchestrator import generate_engagement
-from dotenv import load_dotenv
+from ai_orchestrator import generate_engagement, generate_startup_tweet
+from datetime import datetime
 
-load_dotenv()
+# ... (previous code)
 
-app = FastAPI()
-twitter = TwitterClient()
+# Live Logging System
+logs = []
 
-# Configuration
-KEYWORDS = ["Malawian politics", "science", "philosophy", "quantum physics", "Malawi news", "MCP", "DPP", "UTM", "zikutheka"]
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_MINUTES", 5)) * 60
-PROCESSED_TWEETS_FILE = "processed_tweets.json"
-
-def load_processed_tweets():
-    if os.path.exists(PROCESSED_TWEETS_FILE):
-        try:
-            with open(PROCESSED_TWEETS_FILE, "r") as f:
-                return set(json.load(f))
-        except:
-            return set()
-    return set()
-
-def save_processed_tweets(processed_ids):
-    with open(PROCESSED_TWEETS_FILE, "w") as f:
-        json.dump(list(processed_ids), f)
-
-processed_ids = load_processed_tweets()
+def log_action(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"[{timestamp}] {message}"
+    print(full_message)
+    logs.append(full_message)
+    # Keep only the last 100 logs
+    if len(logs) > 100:
+        logs.pop(0)
 
 async def bot_loop():
     global processed_ids
+    log_action("Engagement loop initialized.")
+    
+    # Startup Action: Find and Retweet a relevant post immediately
+    try:
+        startup_keyword = random.choice(KEYWORDS)
+        log_action(f"Startup: Looking for a tweet to retweet about {startup_keyword}...")
+        startup_tweets = twitter.search_tweets(startup_keyword, max_results=1)
+        if startup_tweets:
+            target = startup_tweets[0]
+            if twitter.retweet(target.id):
+                log_action(f"Startup retweet successful: {target.text[:50]}...")
+                processed_ids.add(target.id)
+                save_processed_tweets(processed_ids)
+        else:
+            log_action("Startup: No tweets found to retweet.")
+    except Exception as e:
+        log_action(f"Failed startup retweet: {e}")
+
     while True:
-        print("Starting engagement loop...")
         keyword = random.choice(KEYWORDS)
-        print(f"Searching for tweets with keyword: {keyword}")
+        log_action(f"Searching for tweets with keyword: {keyword}")
         
         tweets = twitter.search_tweets(keyword, max_results=5)
         
+        if not tweets:
+            log_action("No new tweets found for this keyword.")
+
         for tweet in tweets:
             if tweet.id in processed_ids:
                 continue
                 
             author_name = twitter.get_user_name(tweet.author_id)
-            print(f"Processing tweet from {author_name}: {tweet.text[:50]}...")
+            log_action(f"Processing tweet from @{author_name}: {tweet.text[:50]}...")
             
-            # Randomly decide on action: reply, quote, or retweet
-            # Weighted: 60% reply, 30% quote, 10% retweet
             action_roll = random.random()
             
             if action_roll < 0.6:
                 response = generate_engagement(tweet.text, author_name, "reply")
-                twitter.reply(tweet.id, response)
+                if twitter.reply(tweet.id, response):
+                    log_action(f"Replied: {response}")
             elif action_roll < 0.9:
                 response = generate_engagement(tweet.text, author_name, "quote")
-                twitter.quote(tweet.id, response)
+                if twitter.quote(tweet.id, response):
+                    log_action(f"Quoted: {response}")
             else:
-                twitter.retweet(tweet.id)
+                if twitter.retweet(tweet.id):
+                    log_action("Retweeted successfully.")
                 
             processed_ids.add(tweet.id)
             save_processed_tweets(processed_ids)
             
-            # Wait a bit between actions to avoid being too "bot-like"
-            await asyncio.sleep(random.randint(30, 90))
+            wait_time = random.randint(30, 90)
+            log_action(f"Sleeping for {wait_time}s between actions...")
+            await asyncio.sleep(wait_time)
             
-        print(f"Loop finished. Sleeping for {POLL_INTERVAL} seconds...")
+        log_action(f"Loop finished. Sleeping for {POLL_INTERVAL//60} minutes...")
         await asyncio.sleep(POLL_INTERVAL)
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the bot loop in the background
     asyncio.create_task(bot_loop())
 
 @app.get("/")
 def read_root():
-    return {"status": "Isaac bot is running", "processed_count": len(processed_ids)}
+    # Show the latest 50 logs on the homepage
+    log_html = "<br>".join(reversed(logs))
+    return {
+        "bot_status": "Active",
+        "processed_total": len(processed_ids),
+        "recent_activity": logs[-20:] # Return as JSON for easy reading
+    }
+
+@app.get("/logs")
+def get_all_logs():
+    return {"logs": logs}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
